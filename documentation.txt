@@ -1,0 +1,179 @@
+=====================================
+Assignment 4 Final Submission
+Name: Abhinav Akarsh
+Roll number: 22CS30004
+documentation.txt
+=====================================
+
+
+     P      |   message count   |   transmission count  |   transmissions per message
+------------+-------------------+-----------------------+-------------------------------
+    0.05    |       216         |         271           |           1.254630
+    0.10    |       216         |         316           |           1.462963
+    0.15    |       216         |         368           |           1.703704
+    0.20    |       216         |         401           |           1.856481
+    0.25    |       216         |         465           |           2.152778
+    0.30    |       216         |         544           |           2.518519
+    0.35    |       216         |         561           |           2.597222
+    0.40    |       216         |         640           |           2.962963
+    0.45    |       216         |         714           |           3.305556
+    0.50    |       216         |         883           |           4.087963
+
+
+
+Data structures defined in k_socket.h ------------------------------------------------------
+
+=> buffer: Structure to store the send and receive buffers of the socket
+    - data: (char[MAX_WND][BUFLEN]) Buffer to store the messages
+    - len: (int[MAX_WND]) Length of each message in the buffer
+    - read_end: (int) Read end pointer of the buffer
+    - write_end: (int) Write end pointer of the buffer
+    - count: (int) Number of messages in the buffer (yet to be acknowledged or read)
+
+=> window: Structure to store the information about send and receive windows
+    - marked: (int[MAX_SEQ]) 0-1 Array to store the acknowledged sequence numbers (used only for rwnd)
+    - base: (int) Base pointer
+    - size: (int) Size of the window
+    - count: (int) Number of messages in the window yet to be acknowledged (only for swnd)
+
+=> ktp_socket: Structure to store socket information
+    - state: (int) State of the socket, one of {FREE, TO_CREATE_SOCKET, SOCKET_CREATED, TO_BIND, BOUND, TO_CLOSE}
+    - pid: (int) Process ID of the process that created the socket
+    - sockfd: (int) File descriptor of the Socket
+    - swnd: (window) Send window
+    - rwnd: (window) Receive window
+    - flag: (int) Flag for rwnd when buffer is full, one of {NORMAL, NOSPACE}
+    - src_addr: (struct sockaddr_in) Source address
+    - dst_addr: (struct sockaddr_in) Destination address
+    - send_buf: (buffer) Send buffer
+    - recv_buf: (buffer) Receive buffer
+    - last_sent: (long long int) Time when data was last sent
+    - trans_cnt: (int) Number of times data packet has been transmitted through the socket
+    - msg_count: (int) Number of messages sent through the socket
+    - error: (int) Error code due to various system calls
+
+Functions in k_socket.c ------------------------------------------------------------
+
+=> init: Get shared memory and semaphores
+    - Parameters: None
+    - Returns: None
+
+=> d_init: Detach shared memory
+    - Parameters: None
+    - Returns: None
+
+=> print_error: Prints error messages based on the value of global error variable
+    - Parameters: 
+        - msg (char *) Error message
+    - Returns: None
+
+=> k_socket: Creates a socket
+            - Searches for a free socket in the shared memory
+            - If found, signals the C_thread to create the socket
+    - Parameters: 
+        - domain: (int) Domain of the socket
+        - type: (int) Type of the socket (SOCK_KTP)
+        - protocol: (int) Protocol of the socket
+    - Returns: 
+        - (int) File descriptor of the k_socket or -1 on failure (with error set)
+
+=> k_bind: Binds a socket to givem source and destination address
+            - If a valid socket is given in input, signals the C_thread to bind the socket
+    - Parameters: 
+        - sockfd: (int) File descriptor of the socket
+        - src_addr: (struct sockaddr_in *) Source address
+        - dst_addr: (struct sockaddr_in *) Destination address
+    - Returns: 
+        - (int) 0 on success, -1 on failure (with error set)
+
+=> k_sendto: Sends data to the destination address used in k_bind
+            - If the input parameters are valid and the buffer is not full, inserts the data into the send buffer
+    - Parameters: 
+        - k_sockfd: (int) File descriptor of the ktp socket
+        - buf: (const void *) Data to be sent
+        - len: (size_t) Length of the data
+        - flags: (int) Flags
+        - dst_addr: (const struct sockaddr *) Destination address
+        - addrlen: (socklen_t) Length of the destination address
+    - Returns: 
+        - (int) Number of bytes sent if successful, -1 on failure (with error set)
+
+=> k_recvfrom: Receives data from the destination address used in k_bind
+            - If the input parameters are valid, extracts the data from the receive buffer if available
+    - Parameters: 
+        - k_sockfd: (int) File descriptor of the ktp socket
+        - buf: (void *) Buffer to store the received data
+        - len: (size_t) Length of the buffer
+        - flags: (int) Flags
+        - src_addr: (struct sockaddr *) Fills the source address of the meassge at this location
+        - addrlen: (socklen_t *) Length of the source address of the message
+    - Returns: 
+        - (int) Number of bytes received if successful, -1 on failure
+
+=> k_close: Closes the socket
+            - If the send buffer is not empty, it waits for at max 20*T seconds for the buffer to be empty
+    - Parameters: 
+        - k_sockfd: (int) File descriptor of the ktp socket
+    - Returns: 
+        - (int) 0 on success, -1 on failure
+
+
+Functions in initksocket.c ---------------------------------------------------------
+
+=> init: Initializes the shared memory and semaphores
+    - Parameters: None
+    - Returns: None
+
+=> clean: Detaches the shared memory and semaphores and exits
+    - Parameters:
+        - status: (int) Exit status
+    - Returns: None
+
+=> signalHandler: Handles the SIGINT signal (^C) to detach shared memory and semaphores before exiting
+    - Parameters:
+        - sig: (int) Signal number
+    - Returns: None
+
+=> dropMessage: Drops a message with a given probability
+    - Parameters:
+        - probability: (float) Probability of dropping a message
+    - Returns:
+        - (int) 1 if message is dropped, 0 otherwise
+
+=> receiver: Function for R_thread to receive data from the socket
+            - Waits for timeout T seconds for some data to be received on any socket
+            - If any packet is received, it firsts randomly drops the packet with probability P
+            - If the data packet is within receive window, it is stored in the receive buffer if already not present
+            - The required pointers are updated and if the buffer is full, the flag is set to NOSPACE
+            - If the flag is already set to NOSPACE, then the flag is set to NORMAL as the sender must have received the updated rwnd
+            - The acknowledgement is sent to the sender with last inorder sequence number received and rwnd size
+            - If an acknowledgement is received, the window is slided and the corresponding messages are removed from the send buffer
+            - The send window is updated according to received rwnd in the acknowledgement
+    - Parameters:
+        - arg: (void *) Arguments for the function (NULL)
+    - Returns: None
+
+=> sender: Function for S_thread to send data through the socket
+        - Wakes up every T/2 seconds to check if any data is to be sent
+        - If the send buffer has some new messages, it sends the data packet and sets the timer for T seconds
+        - If the timer expires, it resends the data packet
+        - If the NOSPACE flag is set and receive buffer is not full, it sends the acknowledgement with the updated rwnd
+    - Parameters:
+        - arg: (void *) Arguments for the function (NULL)
+    - Returns: None
+
+=> garbageCollector: Function for G_thread to free the sockfds of terminated processes
+                - Wakes up every 2T seconds to check if any process has terminated
+                - If a process has terminated, it frees the socket and marks the socket as FREE
+    - Parameters:
+        - arg: (void *) Arguments for the function (NULL)
+    - Returns: None
+
+=> createBindClose: Function for C_thread to create, bind, and close the socket
+                - Waits till some process signals for something to be done on the socket
+                - If the socket has state TO_CREATE_SOCKET, it creates the socket and marks the socket as SOCKET_CREATED
+                - If the socket has state TO_BIND, it binds the socket and marks the socket as BOUND
+                - If the socket has state TO_CLOSE, it closes the socket and marks the socket as FREE
+    - Parameters:
+        - arg: (void *) Arguments for the function (NULL)
+    - Returns: None
